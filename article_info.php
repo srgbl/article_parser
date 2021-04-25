@@ -17,105 +17,94 @@ if (strlen($id) != 8)
 	exit;
 $result['article'] = $id;
 
-// Getting product page url by its article
-$session_key = "ace0171a-7f84-499f-a4c5-eecff461b02b";
-$customer_key = "59b18964-eeb2-4a4d-36ca-8f6f8bc6e6c1";
-exec("curl 'https://w102a21be.api.esales.apptus.cloud/api/v1/panels/instant-search?sessionKey=$session_key&customerKey=$customer_key&market=RURU&arg.search_prefix=$id&arg.nr_suggestions=3&arg.nr_planner_suggestions=3&arg.nr_category_suggestions=3&arg.nr_content_suggestions=3&arg.catalog_root=category_catalog_ruru%3A%27root%27&arg.catalog_filter=type%3A%27functional%27%20OR%20type%3A%27products%27%20OR%20type%3A%27series%27%20OR%20type%3A%27collections%27&arg.locale=ru_RU&arg.filter=market%3A%27RURU%27' -H 'Sec-Fetch-Mode: cors' -H 'Referer: https://www.ikea.com/ru/ru/p/linnmon-adils-stol-belyy-s89279386/' -H 'Origin: https://www.ikea.com' -H 'User-Agent: Mozilla/5.0 (Linux; Android 5.0; SM-G900P Build/LRX21T) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/76.0.3809.132 Mobile Safari/537.36' -H 'DNT: 1' --compressed", $search);
-$array = json_decode($search[0], 1);
-$product_url = $array['productSuggestions'][0]['products'][0]['attributes']['pip_url'];
-
 // Loading page
 $max_timout = 10;
 $proxy = false;
+$product_url = "https://www.ikea.com/ru/ru/catalog/products/$id";
 $data = request($product_url, $max_timout, $proxy);
 
 // Start parsing
 $pq = phpQuery::newDocument($data['data']);
 
 // Product title
-$result['title'] = trim($pq->find(' h1 > span.product-pip__name')->html());
+$result['title'] = trim($pq->find('div.range-revamp-header-section__title--big')->html());
+if ($result['title'] == "") {
+    http_response_code(404);
+    exit;
+}
 
 // Product image url
-$result['pic'] = $pq->find('div.range-carousel__image > img')->attr('src');
-$result['pic'] = substr($result['pic'], 0, -4);
+$pic = $pq->find('div.range-revamp-media-grid__grid > div.range-revamp-media-grid__media-container > span > img')->attr('src');
+$result['pic'] = substr($pic , 0,-4);
 
 // Product description
-$description = $pq->find(' h1 > span.normal-font.range__text-rtl')->html();
-$result['description'] = trim(preg_replace('/ \s+/', '', $description));
+$description = $pq->find('div.range-revamp-pip-price-package > div > div> h1 > div > span.range-revamp-header-section__description-text');
+$description = trim($description->html());
 
 // Getting additional information for description like sizes and capacity
-$pieces = $pq->find('#content > div.product-pip.js-product-pip > div.product-pip__top-container.flex.center-horizontal > div.product-pip__right-container > div.product-pip__price-package > div > p.js-pip-price-component.no-margin > span > span.product-pip__price__unit');
-$pieces = trim(preg_replace("/\//", '', $pieces->html()));
+$pieces = $pq->find('div.range-revamp-pip-price-package__wrapper > div > div.range-revamp-pip-price-package__main-price > span > span.range-revamp-price__unit');
+$pieces = trim(preg_replace("/\//", '', $pieces[0]->html()));
 if (strlen($pieces) > 0) {
 	$result['description'] .= ', ' . $pieces;
 }
 
 // Product price
 // Checking current price
-$price = $pq->find('#content > div.product-pip.js-product-pip > div.product-pip__top-container.flex.center-horizontal > div.product-pip__right-container > div.product-pip__price-package > div > p.js-pip-price-component.no-margin > span > span.product-pip__price__value');
-$matches = array();
-preg_match("/.+₽/", $price->html(), $matches);
-$result['price'] = preg_replace("/[^0-9]/", '', $matches[0]);
+$price = $pq-> find('div.range-revamp-pip-price-package__wrapper > div > div.range-revamp-pip-price-package__main-price > span > span.range-revamp-price__integer');
+$result['price'] = intval(preg_replace("/[^0-9]/", '', $price));
 
 // Checking previous price
 $result['discount'] = null;
-$discount = $pq->find('#content > div.product-pip.js-product-pip > div.product-pip__top-container.flex.center-horizontal > div.product-pip__right-container > div.product-pip__price-package > div > p.product-pip__previous-price');
-$matches = array();
-preg_match("/.+₽/s", $discount->html(), $matches);
-preg_match("/Прежняя/", $matches[0], $price_prev);
-if (!$price_prev)
-	$price_prev = preg_replace("/[^0-9]/", '', $matches[0]);
-else
-	$price_prev = null;
-
-// Swap price and previous price if the previous price is exist
-if ($price_prev) {
-	$result['discount'] = $result['price'];
-	$result['price'] = $price_prev;
-}
+$discount = $pq-> find('div.range-revamp-pip-price-package__content-left > div.range-revamp-pip-price-package__previous-price > span > span.range-revamp-price__integer');
+$price_default = intval(preg_replace("/[^0-9]/", '', $discount));
 
 // Checking the validity period of the discount
-if ($result['discount']) {
-	$period = $pq->find('#content > div.product-pip.js-product-pip > div.product-pip__top-container.flex.center-horizontal > div.product-pip__right-container > div.product-pip__price-package > div.price-package');
-	$matches = array();
-	preg_match_all("|\((.*?) - (.*?) Д|", $period->html(), $matches);
-	$result['startDate'] = str_to_date($matches[1][0]);
-	$result['endDate'] = str_to_date($matches[2][0]);
+$matches_period = [];
+$period = $pq-> find('span.range-revamp-pip-price-package__while-supply-last-text-date-range');
+preg_match_all("/[0-9]{2}\.[0-9]{2}\.[0-9]{4}/", $period->html(), $matches_period);
+$result['startDate'] = str_replace('.', '-', $matches_period[0][0]);
+$result['endDate'] = str_replace('.', '-', $matches_period[0][1]);
+
+// Swap price and previous price if the previous price is exist
+if ($price_default != "" && strlen($period) > 0){
+	$result['discount'] = $result['price'];
+	$result['price'] = $price_default;
 }
 
 // Product type: ART (single article) или SPR (combination of few articles)
-preg_match_all('/data-item-type="(.*?)"/i', $data['data'], $matches_type);
-$result['item_type'] = $matches_type[1][0];
+preg_match_all('/data-product-no="'.$id.'" data-product-type="(.*?)"/i', $data['data'], $matches);
+$result['item_type'] = $matches[1][0];
 
 // Product packages
-$packages = $pq->find("#pip_package_details > div > div > div > p > span");
-$packages_block = "";
+$packages = $pq->find("#SEC_product-details-packaging > div > div.range-revamp-product-details__container > div.range-revamp-product-details__container");
+$mblock = "";
+
 foreach ($packages as $key => $value) {
-	$packages_block .= pq($value)->html();
+    $mblock .= pq($value)->html();
 }
-$matches = array();
-preg_match_all("/(Ширина|Высота|Длина|Диаметр|Вес)\:(.*?) /iu", $packages_block, $matches);
+
+preg_match_all("/(Ширина|Высота|Длина|Диаметр|Вес)\: (.*?) /iu", $mblock, $matches);
 $k = 0;
 for ($i = 0; $i < count($matches[1]); $i++) {
-	$ind = (int)($k / 4);
-	if ($matches[1][$i] == 'Ширина')
-		$result['sizes'][$ind]['width'] = $matches[2][$i];
-	if ($matches[1][$i] == 'Высота')
-		$result['sizes'][$ind]['height'] = $matches[2][$i];
-	if ($matches[1][$i] == 'Длина')
-		$result['sizes'][$ind]['length'] = $matches[2][$i];
-	if ($matches[1][$i] == 'Вес')
-		$result['sizes'][$ind]['weight'] = strval($matches[2][$i] * 1000);
-	if ($matches[1][$i] == 'Диаметр') {
-		if (!$result['sizes'][$ind]['width'])
-			$result['sizes'][$ind]['width'] = $matches[2][$i];
-		if (!$result['sizes'][$ind]['length'])
-			$result['sizes'][$ind]['length'] = $matches[2][$i];
-		if (!$result['sizes'][$ind]['height'])
-			$result['sizes'][$ind]['height'] = $matches[2][$i];
-		$k++;
-	}
-	$k++;
+    $ind = (int)($k / 4);
+    if ($matches[1][$i] == 'Ширина')
+            $result['sizes'][$ind]['width'] = intval($matches[2][$i]);
+    if ($matches[1][$i] == 'Высота')
+            $result['sizes'][$ind]['height'] = intval($matches[2][$i]);
+    if ($matches[1][$i] == 'Длина')
+            $result['sizes'][$ind]['length'] = intval($matches[2][$i]);
+    if ($matches[1][$i] == 'Вес')
+            $result['sizes'][$ind]['weight'] = $matches[2][$i] * 1000;
+    if ($matches[1][$i] == 'Диаметр') {
+        if (!$result['sizes'][$ind]['width'])
+            $result['sizes'][$ind]['width'] =  intval($matches[2][$i]);
+        if (!$result['sizes'][$ind]['length'])
+            $result['sizes'][$ind]['length'] =  intval($matches[2][$i]);
+        if (!$result['sizes'][$ind]['height'])
+            $result['sizes'][$ind]['height'] =  intval($matches[2][$i]);
+        $k++;
+    }
+    $k++;
 }
 
 // Product place
@@ -154,25 +143,25 @@ echo json_encode($result);
 function request($url, $timeout = 10, $proxy = false)
 {
 	$headers[] = "User-Agent: Mozilla/5.0 (Windows NT 10.0; WOW64; rv:61.0) Gecko/20100101 Firefox/61.0";
-	$headers[] = "Accept: */*";
-	$headers[] = "Accept-Language: ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3";
+    $headers[] = "Accept: */*";
+    $headers[] = "Accept-Language: ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3";
 
-	$ch = curl_init();
-	curl_setopt($ch, CURLOPT_URL, $url);
-	curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-	curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
-	curl_setopt($ch, CURLOPT_HEADER, 0);
-	curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-	curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
-	curl_setopt($ch, CURLOPT_PROXY, $proxy);
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER,true);
+    curl_setopt($ch, CURLOPT_FOLLOWLOCATION,true);
+    curl_setopt($ch, CURLOPT_HEADER, 0);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_TIMEOUT, $timeout);
+    curl_setopt($ch, CURLOPT_PROXY, $proxy);
 
-	$data = curl_exec($ch);
-	$httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-	curl_close($ch);
+    $data = curl_exec($ch);
+    $httpcode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
 
-	$result['httpcode'] = $httpcode;
-	$result['data'] = $data;
-	return $result;
+    $result['httpcode'] = $httpcode;
+    $result['data'] = $data;
+    return $result;
 }
 
 function str_to_date($str)
